@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
 import Process from './components/Process';
@@ -9,6 +10,13 @@ import Footer from './components/Footer';
 import CartDrawer from './components/CartDrawer';
 import CheckoutModal from './components/CheckoutModal';
 import AdminPanel from './components/AdminPanel';
+
+// Supabase Configuration using provided credentials as defaults
+const supabaseUrl = process.env.SUPABASE_URL || 'https://wdnsmagblzjtbtztwjwm.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndkbnNtYWdibHpqdGJ0enR3andtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3NDAzMzQsImV4cCI6MjA4NDMxNjMzNH0.CtnCFA-jtTCorpasSwvRfGLqsQTPxpsl5bTHhGLttdw';
+
+// Initialize Supabase
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 export interface Product {
   id: string;
@@ -51,33 +59,9 @@ export interface SiteContent {
   };
 }
 
-const DEFAULT_PRODUCTS: Product[] = [
-  {
-    id: '1',
-    name: 'DARK ROAST SIGNATURE',
-    price: 18.00,
-    description: 'Notes of dark chocolate and toasted almond. Bold and unforgettable.',
-    img: 'https://images.unsplash.com/photo-1544233726-9f1d2b27be8b?q=80&w=800'
-  },
-  {
-    id: '2',
-    name: 'ETHIOPIAN BLOSSOM',
-    price: 22.00,
-    description: 'Floral aroma with a clean, fruity finish. Perfect for morning clarity.',
-    img: 'https://images.unsplash.com/photo-1580915411954-282cb1b0d780?q=80&w=800'
-  },
-  {
-    id: '3',
-    name: 'NITRO CREAM PACK (4)',
-    price: 34.00,
-    description: 'Velvety smooth texture in a convenient can. Ready to pour and enjoy.',
-    img: 'https://images.unsplash.com/photo-1517701604599-bb29b565090c?q=80&w=800'
-  }
-];
-
 const DEFAULT_CONTENT: SiteContent = {
   hero: {
-    badge: "Award Winning Brew 2024",
+    badge: "Award Winning Brew 2025",
     titleMain: "BREWED FOR",
     titleSub: "LEGENDS",
     img: "https://images.unsplash.com/photo-1544233726-9f1d2b27be8b?q=80&w=800",
@@ -98,36 +82,54 @@ const DEFAULT_CONTENT: SiteContent = {
 
 const App: React.FC = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [products, setProducts] = useState<Product[]>(DEFAULT_PRODUCTS);
+  const [products, setProducts] = useState<Product[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(localStorage.getItem('brewlab_admin_session') === 'true');
   const [siteContent, setSiteContent] = useState<SiteContent>(DEFAULT_CONTENT);
+  const [isLoading, setIsLoading] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
 
-  // Load persistence
   useEffect(() => {
-    const savedCart = localStorage.getItem('brewlab_cart');
-    if (savedCart) setCart(JSON.parse(savedCart));
+    if (!supabase) {
+      setConfigError("Supabase Configuration Missing. Please set SUPABASE_URL and SUPABASE_ANON_KEY.");
+      setIsLoading(false);
+      return;
+    }
 
-    const savedContent = localStorage.getItem('brewlab_content');
-    if (savedContent) setSiteContent(JSON.parse(savedContent));
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        // Fetch Products
+        const { data: prodData, error: prodError } = await supabase.from('products').select('*');
+        if (!prodError && prodData) setProducts(prodData);
 
-    const savedProducts = localStorage.getItem('brewlab_products');
-    if (savedProducts) setProducts(JSON.parse(savedProducts));
+        // Fetch Site Settings
+        const { data: settingsData, error: settingsError } = await supabase.from('site_settings').select('*').eq('id', 'main').single();
+        if (!settingsError && settingsData) {
+          setSiteContent({
+            hero: settingsData.hero,
+            process: settingsData.process
+          });
+        }
+
+        // Load Cart from LocalStorage
+        const savedCart = localStorage.getItem('brewlab_cart');
+        if (savedCart) setCart(JSON.parse(savedCart));
+      } catch (error) {
+        console.error("Error fetching database:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchData();
   }, []);
 
   useEffect(() => {
     localStorage.setItem('brewlab_cart', JSON.stringify(cart));
   }, [cart]);
-
-  useEffect(() => {
-    localStorage.setItem('brewlab_content', JSON.stringify(siteContent));
-  }, [siteContent]);
-
-  useEffect(() => {
-    localStorage.setItem('brewlab_products', JSON.stringify(products));
-  }, [products]);
 
   const addToCart = (product: Product) => {
     setCart(prev => {
@@ -140,21 +142,24 @@ const App: React.FC = () => {
     setIsCartOpen(true);
   };
 
-  const handleCheckoutSuccess = (customerData: any) => {
-    const newOrder: Order = {
-      id: `ORD-${Date.now()}`,
-      date: new Date().toLocaleString(),
-      items: [...cart],
-      total: cart.reduce((sum, item) => sum + (item.price * item.quantity), 0),
-      customer: customerData
+  const handleCheckoutSuccess = async (customerData: any) => {
+    if (!supabase) return;
+    
+    const orderData = {
+      customer: customerData,
+      items: cart,
+      total: cart.reduce((sum, item) => sum + (item.price * item.quantity), 0)
     };
 
-    const existingOrders = JSON.parse(localStorage.getItem('brewlab_orders') || '[]');
-    localStorage.setItem('brewlab_orders', JSON.stringify([newOrder, ...existingOrders]));
+    const { error } = await supabase.from('orders').insert([orderData]);
     
-    setCart([]);
-    setIsCheckoutOpen(false);
-    alert("Order placed successfully!");
+    if (error) {
+      alert("Error placing order. Please check if your 'orders' table exists in Supabase.");
+    } else {
+      setCart([]);
+      setIsCheckoutOpen(false);
+      alert("Order placed successfully! Transaction synced with Supabase.");
+    }
   };
 
   const handleAdminStatusChange = (status: boolean) => {
@@ -163,6 +168,23 @@ const App: React.FC = () => {
       localStorage.removeItem('brewlab_admin_session');
     }
   };
+
+  if (configError) {
+    return (
+      <div className="h-screen w-full bg-[#1A0F0B] flex flex-col items-center justify-center p-8 text-center">
+        <h2 className="text-yellow-400 font-bebas text-4xl mb-4 tracking-widest uppercase">CONNECTION ERROR</h2>
+        <p className="text-white/60 italic">{configError}</p>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="h-screen w-full bg-[#1A0F0B] flex items-center justify-center">
+        <div className="text-yellow-400 font-bebas text-4xl animate-pulse tracking-[0.3em]">CONNECTING TO VAULT...</div>
+      </div>
+    );
+  }
 
   if (isAdminMode) {
     return (
@@ -174,6 +196,7 @@ const App: React.FC = () => {
         onUpdateContent={setSiteContent}
         products={products}
         onUpdateProducts={setProducts}
+        supabase={supabase}
       />
     );
   }
@@ -215,7 +238,6 @@ const App: React.FC = () => {
         isOpen={isCartOpen} 
         onClose={() => setIsCartOpen(false)} 
         items={cart}
-        /* Fixed: Removed redundant type assertions */
         onRemove={(id) => setCart(prev => prev.filter(i => i.id !== id))}
         onUpdateQty={(id, delta) => setCart(prev => prev.map(item => item.id === id ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item))}
         onCheckout={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }}
